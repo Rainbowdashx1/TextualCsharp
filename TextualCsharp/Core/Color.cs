@@ -21,15 +21,15 @@ public readonly record struct Color(byte R, byte G, byte B, ColorMode Mode = Col
 {
     public static Color Default => new(0, 0, 0, ColorMode.Default);
 
-    // ANSI 16 estándar (índices 0-15).
+    // ANSI 16 estándar — el byte R almacena el índice (0-15), no el componente RGB.
     public static Color Black => new(0, 0, 0, ColorMode.Indexed16);
-    public static Color Red => new(170, 0, 0, ColorMode.Indexed16);
-    public static Color Green => new(0, 170, 0, ColorMode.Indexed16);
-    public static Color Yellow => new(170, 85, 0, ColorMode.Indexed16);
-    public static Color Blue => new(0, 0, 170, ColorMode.Indexed16);
-    public static Color Magenta => new(170, 0, 170, ColorMode.Indexed16);
-    public static Color Cyan => new(0, 170, 170, ColorMode.Indexed16);
-    public static Color White => new(170, 170, 170, ColorMode.Indexed16);
+    public static Color Red => new(1, 0, 0, ColorMode.Indexed16);
+    public static Color Green => new(2, 0, 0, ColorMode.Indexed16);
+    public static Color Yellow => new(3, 0, 0, ColorMode.Indexed16);
+    public static Color Blue => new(4, 0, 0, ColorMode.Indexed16);
+    public static Color Magenta => new(5, 0, 0, ColorMode.Indexed16);
+    public static Color Cyan => new(6, 0, 0, ColorMode.Indexed16);
+    public static Color White => new(7, 0, 0, ColorMode.Indexed16);
 
     public static Color FromRgb(byte r, byte g, byte b) => new(r, g, b, ColorMode.Rgb);
     public static Color FromIndexed256(byte index) => new(index, 0, 0, ColorMode.Indexed256);

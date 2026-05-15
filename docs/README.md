@@ -37,6 +37,7 @@ await app.RunAsync();
 | Widget                | `Widget`                                     | Clase base de todos los controles.                                   |
 | Contenedor            | [`VerticalContainer`, `HorizontalContainer`, `GridContainer`](./containers.md) | Aplican un layout a sus hijos.       |
 | Tamaño                | `LayoutSize.Fixed/Percent/Auto/Fraction`     | Sistema de tamaños tipo CSS.                                         |
+| Markup                | [`Markup`](./widgets/markup.md)              | Etiquetas de color y estilo inline `[bold red]…[/]` para Label y WrapTextWidget. |
 | Estado                | [`Reactive<T>`](./reactive.md)               | Estado observable que invalida el widget al cambiar.                 |
 | Estado derivado       | `Computed<T>`                                | Valor calculado automáticamente desde una o más `Reactive<T>`.       |
 | Señal pub/sub         | `Signal<T>` / `Signal`                       | Comunicación desacoplada entre widgets sin dependencia directa.      |
@@ -49,9 +50,10 @@ await app.RunAsync();
 
 ### Texto y presentación
 
-- [Label](./widgets/label.md) — texto con markup inline `[bold red]...[/]`.
-- [TextWidget](./widgets/textwidget.md) — texto plano monolínea.
-- [Markup](./widgets/markup.md) — sintaxis de markup soportada.
+- [Label](./widgets/label.md) — texto con markup inline `[bold red]...[/]`, una línea.
+- [WrapTextWidget](./widgets/wraptextwidget.md) — texto con markup y **word-wrap automático** en múltiples líneas.
+- [TextWidget](./widgets/textwidget.md) — texto plano monolínea sin markup.
+- [Markup y colores](./widgets/markup.md) — referencia completa de etiquetas, colores ANSI y truecolor `#RRGGBB`.
 - [BorderWidget](./widgets/borderwidget.md) — recuadro decorativo.
 - [PanelWidget](./widgets/panelwidget.md) — contenedor con borde y título.
 - [SpacerWidget](./widgets/spacerwidget.md) — separador flexible.
