@@ -136,6 +136,22 @@ public class ConsoleApp : IAsyncDisposable
         if (_screens.Count == 0)
             throw new InvalidOperationException("No screen pushed. Call PushScreenAsync before RunAsync.");
 
+        // Habilitar UTF-8 para que los caracteres de borde Unicode se rendericen correctamente
+        // en Windows Terminal, conhost y otras consolas compatibles.
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
+        Console.InputEncoding  = System.Text.Encoding.UTF8;
+        if (OperatingSystem.IsWindows())
+        {
+            // Activa la página de código UTF-8 (65001) en la consola clásica de Windows.
+            try { _ = System.Console.OutputEncoding; } catch { /* entorno sin consola */ }
+            [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+            static extern bool SetConsoleOutputCP(uint wCodePageID);
+            [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+            static extern bool SetConsoleCP(uint wCodePageID);
+            SetConsoleOutputCP(65001);
+            SetConsoleCP(65001);
+        }
+
         _driver ??= new WindowsTerminalDriver();
         if (_renderer is null)
         {

@@ -5,6 +5,15 @@ namespace TextualCsharp.Widgets;
 /// </summary>
 public static class BoxDrawing
 {
+    /// <summary>
+    /// Devuelve true si la consola actual puede representar caracteres Unicode de caja.
+    /// Se usa para hacer fallback automático a ASCII en entornos sin soporte.
+    /// </summary>
+    public static bool SupportsUnicode =>
+        Console.OutputEncoding.CodePage == 65001   // UTF-8
+        || Console.OutputEncoding.CodePage == 1200  // UTF-16 LE
+        || Console.OutputEncoding.CodePage == 1201; // UTF-16 BE
+
     // Light single line
     public const char LightHorizontal = '─';
     public const char LightVertical = '│';
@@ -51,14 +60,22 @@ public static class BoxDrawing
         Ascii,
     }
 
-    /// <summary>Obtiene los 6 caracteres de un borde: H, V, TL, TR, BL, BR.</summary>
-    public static (char H, char V, char TL, char TR, char BL, char BR) GetGlyphs(BorderKind kind) => kind switch
+    /// <summary>Obtiene los 6 caracteres de un borde: H, V, TL, TR, BL, BR.
+    /// Si la consola no soporta Unicode se usa automáticamente el estilo ASCII.</summary>
+    public static (char H, char V, char TL, char TR, char BL, char BR) GetGlyphs(BorderKind kind)
     {
-        BorderKind.Light => (LightHorizontal, LightVertical, LightTopLeft, LightTopRight, LightBottomLeft, LightBottomRight),
-        BorderKind.Heavy => (HeavyHorizontal, HeavyVertical, HeavyTopLeft, HeavyTopRight, HeavyBottomLeft, HeavyBottomRight),
-        BorderKind.Double => (DoubleHorizontal, DoubleVertical, DoubleTopLeft, DoubleTopRight, DoubleBottomLeft, DoubleBottomRight),
-        BorderKind.Rounded => (LightHorizontal, LightVertical, RoundedTopLeft, RoundedTopRight, RoundedBottomLeft, RoundedBottomRight),
-        BorderKind.Ascii => ('-', '|', '+', '+', '+', '+'),
-        _ => (' ', ' ', ' ', ' ', ' ', ' '),
-    };
+        // Fallback automático a ASCII cuando la consola no soporta Unicode.
+        if (!SupportsUnicode && kind != BorderKind.None)
+            kind = BorderKind.Ascii;
+
+        return kind switch
+        {
+            BorderKind.Light   => (LightHorizontal, LightVertical, LightTopLeft, LightTopRight, LightBottomLeft, LightBottomRight),
+            BorderKind.Heavy   => (HeavyHorizontal, HeavyVertical, HeavyTopLeft, HeavyTopRight, HeavyBottomLeft, HeavyBottomRight),
+            BorderKind.Double  => (DoubleHorizontal, DoubleVertical, DoubleTopLeft, DoubleTopRight, DoubleBottomLeft, DoubleBottomRight),
+            BorderKind.Rounded => (LightHorizontal, LightVertical, RoundedTopLeft, RoundedTopRight, RoundedBottomLeft, RoundedBottomRight),
+            BorderKind.Ascii   => ('-', '|', '+', '+', '+', '+'),
+            _                  => (' ', ' ', ' ', ' ', ' ', ' '),
+        };
+    }
 }
