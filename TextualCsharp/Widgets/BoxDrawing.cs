@@ -60,13 +60,9 @@ public static class BoxDrawing
         Ascii,
     }
 
-    /// <summary>Obtiene los 6 caracteres de un borde: H, V, TL, TR, BL, BR.
-    /// Si la consola no soporta Unicode se usa automáticamente el estilo ASCII.</summary>
+    /// <summary>Obtiene los 6 caracteres de un borde: H, V, TL, TR, BL, BR.</summary>
     public static (char H, char V, char TL, char TR, char BL, char BR) GetGlyphs(BorderKind kind)
     {
-        // Fallback automático a ASCII cuando la consola no soporta Unicode.
-        if (!SupportsUnicode && kind != BorderKind.None)
-            kind = BorderKind.Ascii;
 
         return kind switch
         {
