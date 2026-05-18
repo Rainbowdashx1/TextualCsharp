@@ -11,7 +11,11 @@ on:
 jobs:
   build-and-test:
     name: Build & Test
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04, windows-latest, macos-latest]
 
     steps:
       - name: Checkout code
@@ -29,6 +33,14 @@ jobs:
         run: dotnet build --no-restore --configuration Release
 
       - name: Run tests
+        run: dotnet test --no-build --configuration Release --verbosity normal
+
+      - name: Run tests (simulated SSH session)
+        if: runner.os != 'Windows'
+        env:
+          TEXTUALCSHARP_FORCE_SSH: '1'
+          SSH_CONNECTION: '127.0.0.1 22 127.0.0.1 51000'
+          SSH_TTY: '/dev/pts/0'
         run: dotnet test --no-build --configuration Release --verbosity normal
 
   publish:

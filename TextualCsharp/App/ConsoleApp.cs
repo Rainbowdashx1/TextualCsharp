@@ -21,10 +21,34 @@ public sealed record FrameTick : Message
 /// </summary>
 public class ConsoleApp : IAsyncDisposable
 {
+    // Flag estático a nivel de proceso: garantiza que el modal de advertencia de
+    // terminal legacy se muestre como máximo UNA vez por ejecución, sin importar
+    // cuántas instancias de ConsoleApp se creen o cuántas veces se llame RunAsync.
+    // volatile es suficiente aquí porque solo se escribe de false→true (sin CAS),
+    // y una condición de carrera hipotética entre dos instancias que arrancasen
+    // exactamente al mismo tiempo sólo causaría mostrar el aviso dos veces —
+    // comportamiento aceptable y que en la práctica nunca ocurre.
+    private static volatile bool _legacyWarningShown;
+
     private readonly Stack<Screen> _screens = new();
     private readonly List<Timer> _timers = new();
     private readonly Channel<Message> _inbox = Channel.CreateUnbounded<Message>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+
+    // Canal acotado para el output ANSI: el event loop encola snapshots completos
+    // del buffer pintado; el pump hace el diff y el Write/Flush en su propio task.
+    // Llevar snapshots (no diffs) garantiza que si el pump descarta un frame
+    // intermedio (DropOldest) el terminal nunca queda en estado inconsistente:
+    // el pump siempre difará el snapshot más reciente contra lo que él mismo
+    // envió por última vez (_pumpPrev), no contra lo que el event loop cree.
+    private readonly Channel<ConsoleBuffer> _outputChannel = Channel.CreateBounded<ConsoleBuffer>(
+        new BoundedChannelOptions(1)
+        {
+            SingleReader = true,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.DropOldest,
+        });
+
     private ITerminalDriver? _driver;
     private IRenderer? _renderer;
     private AnsiWriter? _ansiWriter;
@@ -32,6 +56,7 @@ public class ConsoleApp : IAsyncDisposable
     private ConsoleBuffer? _previous;
     private CancellationTokenSource? _appCts;
     private Task? _driverPump;
+    private Task? _outputPump;
     private bool _exitRequested;
     private int _actionsHandled;
     private Theme _theme = ThemeProvider.Current;
@@ -152,7 +177,7 @@ public class ConsoleApp : IAsyncDisposable
             SetConsoleCP(65001);
         }
 
-        _driver ??= new WindowsTerminalDriver();
+        _driver ??= TerminalDriverFactory.Create();
         if (_renderer is null)
         {
             _ansiWriter = new AnsiWriter();
@@ -161,7 +186,8 @@ public class ConsoleApp : IAsyncDisposable
         _appCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         await _driver.StartAsync(_appCts.Token).ConfigureAwait(false);
-        _driverPump = Task.Run(() => PumpDriverAsync(_appCts.Token));
+        _driverPump  = Task.Run(() => PumpDriverAsync(_appCts.Token));
+        _outputPump  = Task.Run(() => OutputPumpAsync(_appCts.Token));
         foreach (var t in _timers) t.Start();
 
         // Animation pump: ~30 fps mientras haya animaciones activas.
@@ -178,14 +204,58 @@ public class ConsoleApp : IAsyncDisposable
 
         try
         {
-            _ansiWriter?.EnterAltScreen();
+            // Detectar overrides de entorno (útil cuando el cliente SSH no honra
+            // las secuencias VT esperadas).
+            bool useAltScreen = !string.Equals(
+                Environment.GetEnvironmentVariable("TEXTUALCSHARP_NO_ALTSCREEN"),
+                "1", StringComparison.Ordinal);
+            bool isPosixDriver = _driver is PosixTerminalDriver;
+
+            // ── Auto-detección de terminal legacy (SSH + conhost QuickEdit) ──────────
+            // Sondeamos si el cliente responde a DA1 (Device Attributes, ESC[c).
+            // Los terminales modernos (Windows Terminal, PuTTY, xterm, …) responden.
+            // El conhost.exe clásico en modo QuickEdit no responde.
+            // El probe y el modal se ejecutan como máximo UNA vez por proceso:
+            // _legacyWarningShown impide que instancias secundarias de ConsoleApp
+            // (ventanas auxiliares, sub-apps) vuelvan a mostrar el aviso.
+            bool showLegacyWarning = !_legacyWarningShown &&
+                isPosixDriver &&
+                !string.Equals(Environment.GetEnvironmentVariable("TEXTUALCSHARP_NO_VT_PROBE"), "1", StringComparison.Ordinal) &&
+                !PosixTerminalDriver.ProbeVtCapabilities();
+            if (showLegacyWarning)
+                _legacyWarningShown = true;
+
+            // ESTRATEGIA ANTI-QUICKEDIT (SSH/conhost):
+            // ?1000h le pide al conhost local del cliente SSH que suprima QuickEdit
+            // y enrute los clicks como VT. Lo enviamos ANTES del alt-screen (por si
+            // el alt-screen del cliente no resetea modos) Y DESPUÉS (por si sí los
+            // resetea). Belt-and-suspenders: cubre todas las variantes de conhost.
+            if (isPosixDriver)
+                PosixTerminalDriver.EnableMouseReporting();
+
+            if (useAltScreen)
+                _ansiWriter?.EnterAltScreen();
             _ansiWriter?.HideCursor();
             _renderer.Clear();
             _renderer.Flush();
+
+            if (isPosixDriver)
+                PosixTerminalDriver.EnableMouseReporting();
+
             (int w, int h) = _driver.GetSize();
             ResizeBuffers(w, h);
             Layout();
             RenderFrame(fullRedraw: true);
+
+            // Mostrar el aviso DESPUÉS del primer render para que la app de fondo
+            // sea visible y el usuario entienda el contexto del mensaje.
+            // Se llama RenderFrame inmediatamente después del push para que el modal
+            // aparezca en pantalla sin esperar a que llegue el primer evento de input.
+            if (showLegacyWarning)
+            {
+                await PushScreenAsync(new LegacyTerminalWarningModal(this)).ConfigureAwait(false);
+                RenderFrame(fullRedraw: true);
+            }
 
             while (!_exitRequested && !_appCts.IsCancellationRequested)
             {
@@ -199,9 +269,24 @@ public class ConsoleApp : IAsyncDisposable
                 if (msg is null) break;
 
                 await HandleMessageAsync(msg).ConfigureAwait(false);
-                // Drena el resto de mensajes encolados antes de renderizar.
-                while (_inbox.Reader.TryRead(out var extra))
+                // Drena mensajes pendientes antes de renderizar, con límite para evitar
+                // que una ráfaga de eventos de ratón (frecuente en SSH) bloquee el render.
+                const int MaxDrain = 32;
+                int drained = 0;
+                while (drained < MaxDrain && _inbox.Reader.TryRead(out var extra))
+                {
+                    // Coalescencia: si ya procesamos un MouseMove y el siguiente también
+                    // es MouseMove, descartar el intermedio — sólo importa la posición final.
+                    if (extra is MouseEvent { Type: MouseEventType.Move } &&
+                        _inbox.Reader.TryPeek(out var peek) &&
+                        peek is MouseEvent { Type: MouseEventType.Move })
+                    {
+                        drained++;
+                        continue;
+                    }
                     await HandleMessageAsync(extra).ConfigureAwait(false);
+                    drained++;
+                }
 
                 RenderFrame(fullRedraw: false);
             }
@@ -214,18 +299,27 @@ public class ConsoleApp : IAsyncDisposable
             _appCts.Cancel();
             await _driver.StopAsync().ConfigureAwait(false);
             _inbox.Writer.TryComplete();
+            _outputChannel.Writer.TryComplete();
             if (_driverPump is not null)
             {
                 try { await _driverPump.ConfigureAwait(false); }
                 catch (OperationCanceledException) { }
             }
-            _renderer?.Clear();
+            if (_outputPump is not null)
+            {
+                try { await _outputPump.ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+            }
+            // Cleanup final: escribir directamente (el pump ya terminó).
+            if (_driver is PosixTerminalDriver)
+                PosixTerminalDriver.DisableMouseReporting();
             _ansiWriter?.ShowCursor();
             _ansiWriter?.LeaveAltScreen();
-            _renderer?.Flush();
+            try { Console.Out.Flush(); } catch { }
             _appCts.Dispose();
-            _appCts = null;
-            _driverPump = null;
+            _appCts    = null;
+            _driverPump  = null;
+            _outputPump  = null;
         }
         return _actionsHandled;
     }
@@ -240,6 +334,49 @@ public class ConsoleApp : IAsyncDisposable
                 var msg = await _driver.ReadAsync(token).ConfigureAwait(false);
                 if (msg is null) break;
                 _inbox.Writer.TryWrite(msg);
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    /// <summary>
+    /// Pump de salida: lee strings ANSI del canal acotado y los escribe a Console.Out.
+    /// Corre en su propio task para que un Flush lento (SSH con buffer lleno, QuickEdit,
+    /// <summary>
+    /// Pump de salida: recibe snapshots completos del buffer, calcula el diff
+    /// contra lo que el terminal realmente tiene (_pumpPrev), construye el ANSI
+    /// y hace el Write/Flush. Si el canal descarta un snapshot intermedio (DropOldest),
+    /// el siguiente diff se calcula contra _pumpPrev correcto → terminal siempre consistente.
+    /// </summary>
+    private async Task OutputPumpAsync(CancellationToken token)
+    {
+        if (_ansiWriter is null) return;
+        var writer = Console.Out;
+        ConsoleBuffer? pumpPrev = null;   // lo que el terminal realmente tiene
+
+        try
+        {
+            await foreach (var snapshot in _outputChannel.Reader.ReadAllAsync(token).ConfigureAwait(false))
+            {
+                try
+                {
+                    // Diff contra el último estado que el terminal recibió (no el que
+                    // el event loop cree que recibió).
+                    var changes = DiffRenderer.Diff(pumpPrev, snapshot);
+                    if (changes.Count > 0)
+                    {
+                        var ansi = _ansiWriter.Build(changes);
+                        if (ansi is not null)
+                        {
+                            await writer.WriteAsync(ansi.AsMemory(), token).ConfigureAwait(false);
+                            await writer.FlushAsync(token).ConfigureAwait(false);
+                        }
+                    }
+                    // El snapshot ya enviado es ahora el estado real del terminal.
+                    pumpPrev = snapshot;
+                }
+                catch (OperationCanceledException) { break; }
+                catch { /* tubería rota — no crash */ }
             }
         }
         catch (OperationCanceledException) { }
@@ -344,23 +481,45 @@ public class ConsoleApp : IAsyncDisposable
     private void RenderFrame(bool fullRedraw)
     {
         if (_current is null || _renderer is null) return;
-        // Re-layout antes de cada frame para que cambios dinámicos (cambio de
-        // pestaña, push de modal, etc.) propaguen Region a todos los descendientes.
+        // Re-layout antes de cada frame.
         Layout();
         _current.Clear();
         foreach (var screen in _screens.Reverse())
             screen.Paint(_current);
 
-        var prev = fullRedraw ? null : _previous;
-        var changes = DiffRenderer.Diff(prev, _current);
-        if (changes.Count > 0)
+        if (_ansiWriter is not null)
         {
-            _renderer.Apply(changes);
-            _renderer.Flush();
+            // Path asíncrono (SSH / terminal real): encolamos un snapshot completo
+            // del buffer pintado. El pump hace el diff contra lo que él mismo envió
+            // por última vez, de modo que nunca hay inconsistencia aunque se descarten
+            // frames intermedios (DropOldest).
+            // _previous aquí solo evita encolar frames idénticos consecutivos.
+            bool changed = fullRedraw || _previous is null
+                || DiffRenderer.Diff(_previous, _current).Count > 0;
+            if (changed)
+            {
+                // Encolar snapshot clonado (TryWrite es non-blocking).
+                _outputChannel.Writer.TryWrite(_current.Clone());
+                // Actualizar _previous para la deduplicación del próximo frame.
+                if (_previous is null || _previous.Width != _current.Width || _previous.Height != _current.Height)
+                    _previous = new ConsoleBuffer(_current.Width, _current.Height);
+                _current.CopyTo(_previous);
+            }
         }
-        if (_previous is null || _previous.Width != _current.Width || _previous.Height != _current.Height)
-            _previous = new ConsoleBuffer(_current.Width, _current.Height);
-        _current.CopyTo(_previous);
+        else
+        {
+            // Renderer genérico (MockRenderer, tests): path síncrono normal.
+            var prev = fullRedraw ? null : _previous;
+            var changes = DiffRenderer.Diff(prev, _current);
+            if (changes.Count > 0)
+            {
+                _renderer.Apply(changes);
+                _renderer.Flush();
+            }
+            if (_previous is null || _previous.Width != _current.Width || _previous.Height != _current.Height)
+                _previous = new ConsoleBuffer(_current.Width, _current.Height);
+            _current.CopyTo(_previous);
+        }
     }
 
     /// <summary>Fuerza un render inmediato (útil para tests/pilot).</summary>

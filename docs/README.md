@@ -120,3 +120,78 @@ El proyecto `TextualCsharp.Tests` contiene los tests unitarios (xUnit) de los su
 5. **Opcional**: asignarle el foco con `screen.Focus.SetFocus(widget)`.
 
 Consulta los archivos individuales para detalles de cada control.
+
+## Uso por SSH desde Windows
+
+TextualCsharp funciona correctamente a través de SSH. Sin embargo, cuando el cliente
+es **`conhost.exe` clásico** (el terminal de `cmd.exe` / PowerShell clásico en Windows),
+los clicks del ratón pueden congelar visualmente la pantalla. Esto se debe al modo
+**QuickEdit** del conhost, que captura los clicks para seleccionar texto antes de
+que lleguen a la aplicación remota.
+
+### Detección automática
+
+Al arrancar, la app sondea si el terminal responde a las secuencias VT estándar
+(Device Attributes, `ESC[c`). Si el terminal no responde en ~150 ms, se muestra
+automáticamente un **modal de advertencia** dentro de la propia interfaz TUI,
+sobre la pantalla principal de la aplicación:
+
+```
+┌──────────────── ⚠  Terminal legacy detectado ─────────────────┐
+│                                                                │
+│  Tu cliente de terminal no respondió a las secuencias VT      │
+│  estándar (Device Attributes ESC[c).                          │
+│                                                               │
+│  Si te conectas por SSH desde Windows usando conhost.exe      │
+│  (cmd / PowerShell clásico), el modo QuickEdit captura los    │
+│  clicks antes de que lleguen a la app, congelando pantalla.   │
+│                                                               │
+│  Solución recomendada                                         │
+│    Usa Windows Terminal como cliente SSH.                     │
+│    Honra VT automáticamente, sin configuración extra.         │
+│                                                               │
+│  Solución alternativa (conhost)                               │
+│    Click derecho en barra de título → Propiedades → Opciones  │
+│    → desmarca «Modo Edición rápida» → Aceptar.               │
+│                                                               │
+│  Suprime este aviso: set TEXTUALCSHARP_NO_VT_PROBE=1          │
+│                                                               │
+│                    ┌──────────────┐                           │
+│                    │  Entendido   │                           │
+│                    └──────────────┘                           │
+└────────────────────────────────────────────────────────────────┘
+```
+
+El modal aparece **una sola vez por ejecución del proceso**, incluso si la
+aplicación crea varias instancias de `ConsoleApp` internamente. El usuario puede
+cerrarlo pulsando **Enter**, **Espacio** o **Escape**, o haciendo click en el
+botón **«Entendido»**. Tras cerrarlo, la aplicación continúa con normalidad.
+
+### Solución recomendada: usar Windows Terminal
+
+[Windows Terminal](https://aka.ms/terminal) honra la secuencia `?1000h` y desactiva
+QuickEdit automáticamente cuando la app lo solicita. Es la solución con cero
+configuración manual.
+
+### Solución alternativa: desactivar QuickEdit en conhost
+
+Si necesitas seguir usando `conhost.exe`:
+
+1. Haz click derecho en la barra de título de la ventana SSH.
+2. Ve a **Propiedades → Opciones**.
+3. Desmarca **«Modo Edición rápida»** (QuickEdit Mode).
+4. Haz click en **Aceptar**. El cambio es permanente para ese perfil.
+
+### Variables de entorno de control
+
+| Variable                       | Valor | Efecto                                                               |
+|--------------------------------|-------|----------------------------------------------------------------------|
+| `TEXTUALCSHARP_NO_ALTSCREEN`   | `1`   | Omite el cambio al buffer alternativo (alt-screen). Útil si el cliente se comporta mal al cambiar de buffer. |
+| `TEXTUALCSHARP_NO_VT_PROBE`    | `1`   | Suprime la detección automática y el aviso de terminal legacy.       |
+
+```powershell
+# Ejemplo: deshabilitar el probe y usar sin alt-screen
+$env:TEXTUALCSHARP_NO_VT_PROBE = "1"
+$env:TEXTUALCSHARP_NO_ALTSCREEN = "1"
+.\MiApp.exe
+```

@@ -86,4 +86,12 @@ public sealed class ConsoleBuffer
             throw new ArgumentException("Buffer dimensions do not match.");
         _cells.AsSpan().CopyTo(destination._cells);
     }
+
+    /// <summary>Devuelve una copia independiente de este buffer.</summary>
+    public ConsoleBuffer Clone()
+    {
+        var copy = new ConsoleBuffer(_width, _height);
+        _cells.AsSpan().CopyTo(copy._cells);
+        return copy;
+    }
 }

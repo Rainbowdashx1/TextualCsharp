@@ -18,12 +18,40 @@ public sealed class AnsiWriter : IRenderer
     public AnsiWriter(TextWriter? output = null)
     {
         _out = output ?? Console.Out;
+        // Garantiza UTF-8 cuando escribimos a Console.Out: imprescindible para
+        // que los glifos Unicode (bordes, iconos, símbolos) lleguen intactos
+        // a través de SSH o de terminales con locale "C" / Windows legacy.
+        if (output is null)
+            EnsureConsoleUtf8();
     }
 
-    public void Apply(IReadOnlyList<CellChange> changes)
+    /// <summary>
+    /// Configura <see cref="Console.OutputEncoding"/> y <see cref="Console.InputEncoding"/>
+    /// como UTF-8 sin BOM. Idempotente y seguro de llamar varias veces.
+    /// </summary>
+    public static void EnsureConsoleUtf8()
+    {
+        try
+        {
+            var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+            if (!Equals(Console.OutputEncoding, utf8)) Console.OutputEncoding = utf8;
+            if (!Equals(Console.InputEncoding,  utf8)) Console.InputEncoding  = utf8;
+        }
+        catch
+        {
+            // Algunos entornos (CI, redirecciones) no permiten cambiar la codificación.
+        }
+    }
+
+    /// <summary>
+    /// Construye el string ANSI para <paramref name="changes"/> sin escribirlo al stream.
+    /// Devuelve null si la lista está vacía. Útil para desacoplar la construcción del
+    /// diff del I/O de salida (permite encolar el string en un pump dedicado).
+    /// </summary>
+    public string? Build(IReadOnlyList<CellChange> changes)
     {
         ArgumentNullException.ThrowIfNull(changes);
-        if (changes.Count == 0) return;
+        if (changes.Count == 0) return null;
 
         _sb.Clear();
 
@@ -36,11 +64,9 @@ public sealed class AnsiWriter : IRenderer
         {
             var ch = changes[i];
 
-            // Posición: si no es continuación de la celda previa, mover cursor (CUP).
             if (lastY != ch.Y || lastX != ch.X)
                 _sb.Append(Csi).Append(ch.Y + 1).Append(';').Append(ch.X + 1).Append('H');
 
-            // SGR sólo si cambia algún atributo.
             if (lastFg is null || !lastFg.Value.Equals(ch.Cell.Foreground)
                 || lastBg is null || !lastBg.Value.Equals(ch.Cell.Background)
                 || lastStyle is null || lastStyle.Value != ch.Cell.Style)
@@ -57,9 +83,14 @@ public sealed class AnsiWriter : IRenderer
             lastY = ch.Y;
         }
 
-        // Reset al final para no contaminar el terminal del usuario.
         _sb.Append(Csi).Append("0m");
-        _out.Write(_sb.ToString());
+        return _sb.ToString();
+    }
+
+    public void Apply(IReadOnlyList<CellChange> changes)
+    {
+        var s = Build(changes);
+        if (s is not null) _out.Write(s);
     }
 
     public void Clear()
